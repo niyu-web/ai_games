@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #111;
+    color: #eee;
+    font-family: 'Courier New', monospace;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    gap: 32px;
+  }
+  canvas {
+    border: 1px solid #333;
+    display: block;
+  }
+  #panel {
+    width: 120px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .label { font-size: 10px; color: #555; letter-spacing: 2px; text-transform: uppercase; }
+  .value { font-size: 22px; margin-top: 4px; }
+  #next-canvas { border: 1px solid #333; margin-top: 8px; }
+  #msg {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    display: none;
+  }
+  #msg h2 { font-size: 18px; letter-spacing: 4px; margin-bottom: 16px; }
+  #msg button {
+    background: none;
+    border: 1px solid #eee;
+    color: #eee;
+    padding: 8px 24px;
+    font-family: inherit;
+    font-size: 12px;
+    letter-spacing: 2px;
+    cursor: pointer;
+  }
+  #msg button:hover { background: #eee; color: #111; }
+  #keys { font-size: 10px; color: #444; line-height: 1.8; }
+</style>
+</head>
+<body>
+<canvas id="board" width="200" height="400"></canvas>
+<div id="panel">
+  <div>
+    <div class="label">Score</div>
+    <div class="value" id="score">0</div>
+  </div>
+  <div>
+    <div class="label">Level</div>
+    <div class="value" id="level">1</div>
+  </div>
+  <div>
+    <div class="label">Lines</div>
+    <div class="value" id="lines">0</div>
+  </div>
+  <div>
+    <div class="label">Next</div>
+    <canvas id="next-canvas" width="80" height="80"></canvas>
+  </div>
+  <div id="keys">
+    ← → 移動<br>
+    ↑ 回転<br>
+    ↓ 落下<br>
+    Space ハード落下<br>
+    P 一時停止
+  </div>
+</div>
+<div id="msg">
+  <h2 id="msg-title">GAME OVER</h2>
+  <button onclick="startGame()">START</button>
+</div>
+
+<script>
+const C = document.getElementById('board');
+const ctx = C.getContext('2d');
+const NC = document.getElementById('next-canvas');
+const nctx = NC.getContext('2d');
+const SZ = 20, COLS = 10, ROWS = 20;
+
+const PIECES = [
+  [[1,1,1,1]],
+  [[1,1],[1,1]],
+  [[0,1,0],[1,1,1]],
+  [[1,0,0],[1,1,1]],
+  [[0,0,1],[1,1,1]],
+  [[1,1,0],[0,1,1]],
+  [[0,1,1],[1,1,0]]
+];
+const COLORS = ['#fff','#ccc','#aaa','#888','#666','#444','#bbb'];
+
+let board, piece, next, score, level, lines, dropping, paused, gameOver, raf;
+
+function newBoard() { return Array.from({length:ROWS}, () => Array(COLS).fill(0)); }
+
+function randPiece() {
+  const i = Math.floor(Math.random() * PIECES.length);
+  const shape = PIECES[i].map(r => [...r]);
+  return { shape, color: COLORS[i], x: Math.floor(COLS/2) - Math.floor(shape[0].length/2), y: 0 };
+}
+
+function rotate(shape) {
+  return shape[0].map((_,c) => shape.map(r => r[c]).reverse());
+}
+
+function valid(s, x, y) {
+  return s.every((row, r) => row.every((v, c) =>
+    !v || (x+c >= 0 && x+c < COLS && y+r < ROWS && !(y+r >= 0 && board[y+r][x+c]))
+  ));
+}
+
+function place() {
+  piece.shape.forEach((row, r) => row.forEach((v, c) => {
+    if (v && piece.y+r >= 0) board[piece.y+r][piece.x+c] = piece.color;
+  }));
+  clearLines();
+  piece = next;
+  next = randPiece();
+  if (!valid(piece.shape, piece.x, piece.y)) endGame();
+}
+
+function clearLines() {
+  let cleared = 0;
+  for (let r = ROWS-1; r >= 0; r--) {
+    if (board[r].every(v => v)) { board.splice(r,1); board.unshift(Array(COLS).fill(0)); cleared++; r++; }
+  }
+  if (cleared) {
+    const pts = [0,100,300,500,800];
+    score += (pts[cleared]||800) * level;
+    lines += cleared;
+    level = Math.floor(lines / 10) + 1;
+    document.getElementById('score').textContent = score;
+    document.getElementById('level').textContent = level;
+    document.getElementById('lines').textContent = lines;
+  }
+}
+
+function drop() {
+  if (paused || gameOver) return;
+  if (valid(piece.shape, piece.x, piece.y+1)) piece.y++;
+  else place();
+  draw();
+}
+
+function hardDrop() {
+  while (valid(piece.shape, piece.x, piece.y+1)) piece.y++;
+  place(); draw();
+}
+
+function draw() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0,0,C.width,C.height);
+  // grid
+  ctx.strokeStyle = '#1a1a1a';
+  for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++) {
+    ctx.strokeRect(c*SZ,r*SZ,SZ,SZ);
+  }
+  // board
+  board.forEach((row,r) => row.forEach((v,c) => {
+    if (v) { ctx.fillStyle=v; ctx.fillRect(c*SZ+1,r*SZ+1,SZ-2,SZ-2); }
+  }));
+  // ghost
+  let gy = piece.y;
+  while (valid(piece.shape, piece.x, gy+1)) gy++;
+  piece.shape.forEach((row,r) => row.forEach((v,c) => {
+    if (v) { ctx.fillStyle='rgba(255,255,255,0.08)'; ctx.fillRect((piece.x+c)*SZ+1,(gy+r)*SZ+1,SZ-2,SZ-2); }
+  }));
+  // piece
+  piece.shape.forEach((row,r) => row.forEach((v,c) => {
+    if (v && piece.y+r >= 0) { ctx.fillStyle=piece.color; ctx.fillRect((piece.x+c)*SZ+1,(piece.y+r)*SZ+1,SZ-2,SZ-2); }
+  }));
+  // next
+  nctx.fillStyle='#111'; nctx.fillRect(0,0,80,80);
+  const ns = next.shape, ox = Math.floor((4-ns[0].length)/2)*16, oy = Math.floor((4-ns.length)/2)*16;
+  ns.forEach((row,r) => row.forEach((v,c) => {
+    if (v) { nctx.fillStyle=next.color; nctx.fillRect(ox+c*16+1,oy+r*16+1,14,14); }
+  }));
+}
+
+function loop(t) {
+  if (!gameOver && !paused) {
+    if (!loop.last) loop.last = t;
+    const interval = Math.max(100, 800 - (level-1)*70);
+    if (t - loop.last > interval) { drop(); loop.last = t; }
+  }
+  raf = requestAnimationFrame(loop);
+}
+
+function startGame() {
+  board = newBoard();
+  piece = randPiece();
+  next = randPiece();
+  score = 0; level = 1; lines = 0; paused = false; gameOver = false;
+  document.getElementById('score').textContent = 0;
+  document.getElementById('level').textContent = 1;
+  document.getElementById('lines').textContent = 0;
+  document.getElementById('msg').style.display = 'none';
+  loop.last = null;
+  if (raf) cancelAnimationFrame(raf);
+  raf = requestAnimationFrame(loop);
+  draw();
+}
+
+function endGame() {
+  gameOver = true;
+  document.getElementById('msg-title').textContent = 'GAME OVER';
+  document.getElementById('msg').style.display = 'block';
+}
+
+document.addEventListener('keydown', e => {
+  if (gameOver) return;
+  if (e.key === 'p' || e.key === 'P') { paused = !paused; return; }
+  if (paused) return;
+  if (e.key === 'ArrowLeft') { if (valid(piece.shape,piece.x-1,piece.y)) { piece.x--; draw(); } }
+  if (e.key === 'ArrowRight') { if (valid(piece.shape,piece.x+1,piece.y)) { piece.x++; draw(); } }
+  if (e.key === 'ArrowDown') { drop(); }
+  if (e.key === 'ArrowUp') {
+    const r = rotate(piece.shape);
+    if (valid(r,piece.x,piece.y)) { piece.shape=r; draw(); }
+    else if (valid(r,piece.x-1,piece.y)) { piece.shape=r; piece.x--; draw(); }
+    else if (valid(r,piece.x+1,piece.y)) { piece.shape=r; piece.x++; draw(); }
+  }
+  if (e.key === ' ') { e.preventDefault(); hardDrop(); }
+});
+
+// show start screen
+document.getElementById('msg-title').textContent = 'PUZZLE';
+document.getElementById('msg').style.display = 'block';
+board = newBoard();
+piece = randPiece();
+next = randPiece();
+draw();
+</script>
+</body>
+</html>
